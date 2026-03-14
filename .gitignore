@@ -1,0 +1,120 @@
+# ========================
+# OS & Editor
+# ========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.code-workspace
+
+# ========================
+# Environment / Secrets
+# ========================
+.env
+.env.local
+.env.*.local
+
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+ENV/
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ========================
+# Node.js
+# ========================
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# ========================
+# Next.js
+# ========================
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# ========================
+# Logs
+# ========================
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+ngrok.log
+
+# ========================
+# Database
+# ========================
+*.db
+*.sqlite
+*.sqlite3
+
+# ========================
+# Storage / Recordings
+# ========================
+storage/
+recordings/
+
+# ========================
+# Deployment
+# ========================
+.vercel
+*.pem
+
+# ========================
+# Internal dev artifacts
+# ========================
+AGENT_CONVERSATION_ISSUE.md
+AGENT_DISPATCH_FIX.md
+ARCHITECTURE_CORRECTION.md
+CALL_ISSUE_RESOLUTION.md
+CORRECT_IMPLEMENTATION_PLAN.md
+FIRST_TEST_SUCCESS.md
+FRONTEND_AI_GENERATION.md
+FRONTEND_FIX_SUMMARY.md
+FRONTEND_PAGES_SUMMARY.txt
+FRONTEND_PROGRESS.md
+FRONTEND_QUICK_REFERENCE.md
+IMPLEMENTATION_COMPLETE.md
+PROGRESS_SUMMARY.md
+QUICK_START.md
+STAGE_1_COMPLETE.md
+STAGE_1_TEST.md
+STAGE_2_COMPLETE.md
+STAGE_2_TEST.md
+STAGE_3_COMPLETE.md
+STAGE_3_TEST.md
+STAGE_4_COMPLETE.md
+STAGE_4_COMPLETE_OLD.md
+STAGE_4_TEST.md
+STAGE_6_FRONTEND_COMPLETE.md
+STAGE_6_FRONTEND_PLAN.md
+TDD_COMPREHENSIVE.md
+TDD_UPDATE_SUMMARY.md
+setup.sh
