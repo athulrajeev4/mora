@@ -3,10 +3,13 @@ LiveKit Voice Agent for Mora Platform
 Implements STT -> LLM -> TTS conversational agent for inbound calls
 """
 
+import asyncio
 import os
 import logging
 import json
 from typing import Dict, Any, Optional
+from google.auth import default as google_auth_default
+from google.auth.exceptions import DefaultCredentialsError
 from livekit import rtc
 from livekit.agents import (
     AutoSubscribe,
@@ -16,11 +19,20 @@ from livekit.agents import (
     cli,
 )
 from livekit.agents.voice import Agent, AgentSession
-from livekit.plugins import deepgram, openai, elevenlabs
+from livekit.plugins import deepgram, openai, elevenlabs, google
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+
+
+def _has_google_cloud_credentials() -> bool:
+    """Return True when ADC/service-account credentials are available."""
+    try:
+        google_auth_default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        return True
+    except DefaultCredentialsError:
+        return False
 
 
 def prewarm(proc: JobProcess):
@@ -62,19 +74,63 @@ async def entrypoint(ctx: JobContext):
     if is_test_call:
         logger.info("Test calling mode enabled")
 
-    stt = deepgram.STT(
-        model="nova-2-general",
-        language="en",
-    )
+    has_google_adc = _has_google_cloud_credentials()
 
-    llm_model = openai.LLM(
-        model="gpt-4o",
-    )
+    # LLM: prefer Google Gemini using GOOGLE_API_KEY.
+    # Fallback to OpenAI only if Gemini init fails.
+    try:
+        llm_model = google.LLM(
+            model=os.getenv("GOOGLE_LLM_MODEL", "gemini-2.5-flash"),
+            api_key=os.getenv("GOOGLE_API_KEY"),
+        )
+        logger.info("Using Google Gemini LLM")
+    except Exception as e:
+        logger.warning(f"Failed to init Gemini LLM, falling back to OpenAI LLM: {e}")
+        llm_model = openai.LLM(model="gpt-4o")
 
-    tts = elevenlabs.TTS(
-        voice_id="21m00Tcm4TlvDq8ikWAM",
-        model="eleven_turbo_v2_5",
-    )
+    # STT: use Google STT when ADC is present; otherwise Deepgram.
+    if has_google_adc:
+        try:
+            stt = google.STT(
+                model=os.getenv("GOOGLE_STT_MODEL", "latest_long"),
+                languages=os.getenv("GOOGLE_STT_LANGUAGE", "en-US"),
+            )
+            logger.info("Using Google STT")
+        except Exception as e:
+            logger.warning(f"Failed to init Google STT, falling back to Deepgram: {e}")
+            stt = deepgram.STT(model="nova-2-general", language="en")
+    else:
+        stt = deepgram.STT(model="nova-2-general", language="en")
+        logger.info("Using Deepgram STT (Google ADC not configured)")
+
+    # TTS: use Google Chirp HD voice when ADC is present.
+    # Otherwise fallback to ElevenLabs.
+    if has_google_adc:
+        try:
+            chirp_voice = os.getenv("GOOGLE_TTS_VOICE_NAME", "en-US-Chirp-HD-F")
+            tts = google.TTS(
+                voice_name=chirp_voice,
+                # Chirp 3 voices are selected via voice_name.
+                use_streaming=True,
+            )
+            logger.info(f"Using Google Chirp TTS voice: {chirp_voice}")
+        except Exception as e:
+            logger.warning(f"Failed to init Google TTS, falling back to ElevenLabs: {e}")
+            eleven_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "CwhRBWXzGAHq8TQ4Fs17")
+            tts = elevenlabs.TTS(
+                voice_id=eleven_voice_id,
+                model="eleven_turbo_v2_5",
+            )
+            logger.info(f"Using ElevenLabs voice fallback: {eleven_voice_id}")
+    else:
+        eleven_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "CwhRBWXzGAHq8TQ4Fs17")
+        tts = elevenlabs.TTS(
+            voice_id=eleven_voice_id,
+            model="eleven_turbo_v2_5",
+        )
+        logger.info(
+            "Using ElevenLabs TTS (Google ADC not configured, Chirp unavailable)"
+        )
 
     if is_test_call:
         scenario = room_metadata.get("scenario", "Unknown Test")
@@ -139,11 +195,11 @@ Greet the caller and ask how you can help them today."""
     logger.info(f"Voice agent started for room: {ctx.room.name}, participant: {participant.identity}")
     logger.info("Agent listening and ready to respond...")
 
+    # Keep the job alive until LiveKit closes/cancels it.
     try:
-        await participant.wait_for_disconnection()
-        logger.info(f"Participant disconnected from room: {ctx.room.name}")
-    except Exception as e:
-        logger.error(f"Error waiting for disconnection: {e}")
+        await asyncio.Future()
+    except asyncio.CancelledError:
+        logger.info(f"Agent job cancelled for room: {ctx.room.name}")
 
 
 if __name__ == "__main__":

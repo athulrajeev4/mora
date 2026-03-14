@@ -118,21 +118,19 @@ class ProjectService:
         # Update status to running
         db_project.status = ProjectStatus.RUNNING
         
-        # Create test runs for each test case in each test suite
+        # Create one test run per test case (all will share a single phone call)
         for test_suite in db_project.test_suites:
             test_cases = db.query(TestCase).filter(
                 TestCase.test_suite_id == test_suite.id
             ).all()
             
             for test_case in test_cases:
-                # Create N test runs (number_of_calls)
-                for _ in range(db_project.number_of_calls):
-                    test_run = TestRun(
-                        project_id=db_project.id,
-                        test_case_id=test_case.id,
-                        status=TestRunStatus.PENDING
-                    )
-                    db.add(test_run)
+                test_run = TestRun(
+                    project_id=db_project.id,
+                    test_case_id=test_case.id,
+                    status=TestRunStatus.PENDING,
+                )
+                db.add(test_run)
         
         db.commit()
         db.refresh(db_project)

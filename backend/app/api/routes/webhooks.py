@@ -1,5 +1,5 @@
 """
-Twilio Webhook Routes - Handle Twilio callbacks
+Twilio Webhook Routes - Handle Twilio callbacks and media stream bridge
 """
 from uuid import UUID
 from fastapi import APIRouter, Depends, Request, Form, HTTPException, status, WebSocket
@@ -9,14 +9,16 @@ from typing import Optional
 
 from app.core.database import get_db
 from app.services.call_execution_service import call_execution_service
+from app.services.call_orchestration_service import call_orchestration_service
 from app.services.twilio_service import twilio_service
+from app.services.livekit_bridge import handle_twilio_websocket
 from app.core.config import settings
 
 router = APIRouter()
 
 
 # ============================================================================
-# TwiML Voice Response - Provide call instructions
+# TwiML Voice Response - Set up media stream to LiveKit bridge
 # ============================================================================
 
 @router.post("/voice/{test_run_id}")
@@ -25,32 +27,77 @@ async def handle_voice_webhook(
     db: Session = Depends(get_db)
 ):
     """
-    TwiML endpoint that provides voice instructions for the call
+    TwiML endpoint called when the outbound call is answered.
     
-    This is called when the call is answered. It returns TwiML that tells
-    Twilio what to do (play message, record, etc.)
+    Returns TwiML that opens a bidirectional media stream (WebSocket)
+    to our backend, which bridges the audio to a LiveKit room
+    where the AI test caller agent is waiting.
     """
     from app.models import TestRun, TestCase
-    
-    # Get test run and test case
+
     test_run = db.query(TestRun).filter(TestRun.id == test_run_id).first()
     if not test_run:
         raise HTTPException(status_code=404, detail="Test run not found")
-    
-    test_case = db.query(TestCase).filter(TestCase.id == test_run.test_case_id).first()
-    if not test_case:
-        raise HTTPException(status_code=404, detail="Test case not found")
-    
-    # Generate TwiML response
-    # Speak the utterance and record the full conversation
-    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+
+    room_name = call_orchestration_service.get_room_for_test_run(str(test_run_id))
+
+    if room_name and settings.PUBLIC_URL:
+        ws_url = settings.PUBLIC_URL.replace("https://", "wss://").replace("http://", "ws://")
+        stream_url = f"{ws_url}/api/webhooks/twilio/stream/{test_run_id}"
+
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="Polly.Joanna">{test_case.utterance}</Say>
-    <Pause length="5"/>
+    <Connect>
+        <Stream url="{stream_url}">
+            <Parameter name="test_run_id" value="{test_run_id}"/>
+            <Parameter name="room_name" value="{room_name}"/>
+        </Stream>
+    </Connect>
+</Response>"""
+    else:
+        test_case = db.query(TestCase).filter(TestCase.id == test_run.test_case_id).first()
+        utterance = test_case.utterance if test_case else "Hello, this is a test call."
+
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">{utterance}</Say>
+    <Pause length="10"/>
+    <Say voice="Polly.Joanna">Thank you, goodbye.</Say>
     <Hangup/>
 </Response>"""
-    
+
     return Response(content=twiml, media_type="application/xml")
+
+
+# ============================================================================
+# WebSocket Media Stream - Twilio <-> LiveKit Bridge
+# ============================================================================
+
+@router.websocket("/stream/{test_run_id}")
+async def handle_media_stream(
+    websocket: WebSocket,
+    test_run_id: str,
+):
+    """
+    WebSocket endpoint for Twilio bidirectional media stream.
+    
+    Twilio sends audio frames here after <Connect><Stream> TwiML.
+    We bridge the audio to the LiveKit room where the AI agent lives.
+    """
+    room_name = call_orchestration_service.get_room_for_test_run(test_run_id)
+
+    if not room_name:
+        print(f"⚠️ No room found for test run {test_run_id}, rejecting WebSocket")
+        await websocket.close(code=1008)
+        return
+
+    print(f"🌉 Starting media stream bridge: test_run={test_run_id}, room={room_name}")
+
+    await handle_twilio_websocket(
+        websocket=websocket,
+        test_run_id=test_run_id,
+        room_name=room_name,
+    )
 
 
 # ============================================================================
@@ -66,33 +113,19 @@ async def handle_status_webhook(
     db: Session = Depends(get_db)
 ):
     """
-    Handle call status updates from Twilio
-    
-    Twilio sends POST requests here as the call progresses:
-    - initiated: Call has been created
-    - ringing: Phone is ringing
-    - answered: Call was answered
-    - completed: Call ended
-    - failed/busy/no-answer: Call failed
-    
-    **Form Data from Twilio:**
-    - CallSid: Unique identifier for the call
-    - CallStatus: Current status (initiated, ringing, answered, completed, etc.)
-    - CallDuration: Duration in seconds (only for completed calls)
+    Handle call status updates from Twilio.
     """
-    print(f"Status webhook: {test_run_id} - {CallStatus}")
-    
-    # Parse duration
+    print(f"📞 Status webhook: {test_run_id} - {CallStatus}")
+
     duration = int(CallDuration) if CallDuration else None
-    
-    # Update test run status
+
     call_execution_service.update_call_status(
         db=db,
         test_run_id=test_run_id,
         call_status=CallStatus,
         call_duration=duration
     )
-    
+
     return {"status": "received"}
 
 
@@ -109,31 +142,19 @@ async def handle_recording_webhook(
     db: Session = Depends(get_db)
 ):
     """
-    Handle recording completion webhook from Twilio
-    
-    Called when the call recording is ready. We store the recording URL
-    and optionally trigger transcription.
-    
-    **Form Data from Twilio:**
-    - RecordingSid: Unique identifier for the recording
-    - RecordingUrl: URL to access the recording
-    - RecordingDuration: Duration in seconds
+    Handle recording completion webhook from Twilio.
     """
-    print(f"Recording webhook: {test_run_id} - {RecordingSid}")
-    
-    # Convert recording URL to MP3 format
+    print(f"🎙️ Recording webhook: {test_run_id} - {RecordingSid}")
+
     recording_url = RecordingUrl.replace('.json', '.mp3')
-    
-    # Store recording URL
+
     call_execution_service.store_recording(
         db=db,
         test_run_id=test_run_id,
         recording_url=recording_url,
         recording_sid=RecordingSid
     )
-    
-    # TODO: In Stage 5, trigger transcription here
-    # For now, we can try to get Twilio's built-in transcription
+
     try:
         transcript = twilio_service.get_transcription(RecordingSid)
         if transcript:
@@ -144,7 +165,7 @@ async def handle_recording_webhook(
             )
     except Exception as e:
         print(f"Error fetching transcription: {e}")
-    
+
     return {"status": "received"}
 
 
@@ -158,17 +179,13 @@ async def store_transcript(
     transcript: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    """
-    Manually store a transcript for a test run
-    
-    This is useful for testing or when using external transcription services.
-    """
+    """Manually store a transcript for a test run."""
     success = call_execution_service.store_transcript(
         db=db,
         test_run_id=test_run_id,
         transcript=transcript
     )
-    
+
     if success:
         return {"status": "stored", "test_run_id": str(test_run_id)}
     else:

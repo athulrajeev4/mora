@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     LIVEKIT_URL: str
     LIVEKIT_API_KEY: str
     LIVEKIT_API_SECRET: str
+    LIVEKIT_DISPATCH_AGENT: str = "mora-voice-agent"
     
     # Deepgram (Speech-to-Text)
     DEEPGRAM_API_KEY: Optional[str] = None

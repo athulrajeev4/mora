@@ -6,6 +6,10 @@ Run this in a separate terminal to handle voice agent connections
 
 import asyncio
 import logging
+
+from dotenv import load_dotenv
+load_dotenv()
+
 from livekit.agents import WorkerOptions, cli
 from app.agents.voice_agent import entrypoint, prewarm
 

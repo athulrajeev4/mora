@@ -1,13 +1,15 @@
 """
 Call Orchestration Service
-Orchestrates outbound test calls with LiveKit rooms and AI test callers
+Orchestrates outbound test calls with LiveKit rooms and AI test callers.
+
+Key design: ONE phone call per project activation covering ALL test cases.
 """
 
 import asyncio
 import logging
 import uuid
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 from sqlalchemy.orm import Session
 
@@ -20,298 +22,222 @@ logger = logging.getLogger(__name__)
 
 class CallOrchestrationService:
     """
-    Orchestrates the complete flow of a test call:
-    1. Create LiveKit room with metadata
-    2. Start AI test caller agent in room
-    3. Make Twilio outbound call to user's bot
-    4. Connect call to LiveKit room via SIP
-    5. Monitor call progress
-    6. Collect results when complete
+    Orchestrates the complete flow of a project test:
+    1. Collect ALL test cases across attached suites
+    2. Create ONE LiveKit room with full test plan in metadata
+    3. Dispatch AI agent into the room
+    4. Make ONE Twilio outbound call to the user's bot
+    5. Bridge call audio into the room (handled by webhooks/bridge)
+    6. Agent executes all test cases sequentially in a single conversation
+    7. When call ends, mark all test runs complete
     """
-    
+
     def __init__(self):
         self.active_calls: Dict[str, Dict[str, Any]] = {}
-    
-    async def execute_test_run(
-        self,
-        db: Session,
-        project: Project,
-        test_case: TestCase,
-        test_run: TestRun,
-    ) -> Dict[str, Any]:
-        """
-        Execute a single test run
-        
-        Args:
-            db: Database session
-            project: Project being tested
-            test_case: Test case to execute
-            test_run: TestRun record to update
-            
-        Returns:
-            Results dictionary with transcript and evaluation
-        """
-        logger.info(f"🎬 Starting test run for test case: {test_case.id}")
-        logger.info(f"   Project: {project.name}")
-        logger.info(f"   Bot Phone: {project.bot_phone_number}")
-        logger.info(f"   Test Case: {test_case.utterance}")
-        
-        call_sid = None
-        try:
-            # Update test run status
-            test_run.status = TestRunStatus.IN_PROGRESS
-            test_run.started_at = datetime.utcnow()
-            db.commit()
-            
-            # Get test suite for scenario
-            test_suite = test_case.test_suite
-            
-            # 1. Create LiveKit room with test configuration
-            room_name = f"test-{project.id}-{test_case.id}-{uuid.uuid4()}"
-            logger.info(f"📦 Creating LiveKit room: {room_name}")
-            
-            room_metadata = {
-                'scenario': test_suite.scenario,
-                'test_cases': [{
-                    'id': str(test_case.id),
-                    'utterance': test_case.utterance,
-                    'expected_behavior': test_case.expected_behavior,
-                    'order': test_case.order,
-                }],
-                'test_run_id': str(test_run.id),
-                'project_id': str(project.id),
-                'bot_phone': project.bot_phone_number,
-            }
-            
-            room_info = await livekit_service.create_test_room(
-                room_name=room_name,
-                metadata=room_metadata,
-            )
-            
-            logger.info(f"✅ Room created: {room_name}")
-            
-            # 2. Start AI test caller agent in room (runs in background)
-            logger.info("🤖 Starting AI test caller agent...")
-            agent_task = asyncio.create_task(
-                self._wait_for_agent_ready(room_name)
-            )
-            
-            # Wait a moment for agent to join
-            await asyncio.sleep(2)
-            
-            # 3. Make outbound call to user's bot
-            logger.info(f"📞 Making outbound call to {project.bot_phone_number}...")
-            
-            call_sid = await twilio_service.make_outbound_test_call(
-                to_phone=project.bot_phone_number,
-                room_name=room_name,
-                sip_uri=room_info['sip_uri'],
-                test_run_id=str(test_run.id),
-            )
-            
-            if not call_sid:
-                raise Exception("Failed to initiate Twilio call")
-            
-            logger.info(f"✅ Call initiated: {call_sid}")
-            
-            # Update test run with call SID
-            test_run.call_sid = call_sid
-            db.commit()
-            
-            # 4. Track active call
-            self.active_calls[call_sid] = {
-                'room_name': room_name,
-                'test_run_id': str(test_run.id),
-                'started_at': datetime.utcnow(),
-                'status': 'in_progress',
-            }
-            
-            # 5. Wait for call to complete (with timeout)
-            logger.info("⏳ Waiting for call to complete...")
-            
-            try:
-                results = await asyncio.wait_for(
-                    self._wait_for_call_completion(call_sid, room_name),
-                    timeout=300  # 5 minutes max
-                )
-                
-                logger.info("✅ Call completed successfully")
-                
-                # Update test run status
-                test_run.status = TestRunStatus.SUCCESS
-                test_run.completed_at = datetime.utcnow()
-                
-                # Store results (transcript, evaluations will be added later)
-                # For now, we'll update via webhook when results are available
-                
-                db.commit()
-                
-                return results
-                
-            except asyncio.TimeoutError:
-                logger.error("⏰ Call timeout - exceeded 5 minutes")
-                test_run.status = TestRunStatus.FAILURE
-                test_run.completed_at = datetime.utcnow()
-                db.commit()
-                
-                raise Exception("Call timeout")
-            
-        except Exception as e:
-            logger.error(f"❌ Error executing test run: {e}", exc_info=True)
-            
-            # Update test run as failed
-            test_run.status = TestRunStatus.FAILURE
-            test_run.completed_at = datetime.utcnow()
-            db.commit()
-            
-            # Cleanup
-            if call_sid:
-                self.active_calls.pop(call_sid, None)
-            
-            raise
-    
-    async def _wait_for_agent_ready(self, room_name: str):
-        """Wait for AI agent to join the room"""
-        # The agent will join automatically when the room is created
-        # This is handled by LiveKit's agent dispatch
-        logger.info(f"⏳ Waiting for agent to join room: {room_name}")
-        await asyncio.sleep(3)
-        logger.info("✅ Agent should be ready in room")
-    
-    async def _wait_for_call_completion(
-        self,
-        call_sid: str,
-        room_name: str
-    ) -> Dict[str, Any]:
-        """
-        Wait for call to complete and return results
-        
-        In practice, this would:
-        1. Poll Twilio for call status
-        2. Poll LiveKit for room participants
-        3. Wait for room to be empty
-        4. Fetch results from agent
-        """
-        # For now, simulate waiting for call completion
-        # In real implementation, we'd monitor the room and call status
-        
-        while True:
-            await asyncio.sleep(5)
-            
-            # Check if call is still active
-            call_info = self.active_calls.get(call_sid)
-            if not call_info:
-                break
-            
-            # Check Twilio call status
-            call_status = twilio_service.get_call_status(call_sid)
-            
-            if call_status in ['completed', 'failed', 'busy', 'no-answer', 'canceled']:
-                logger.info(f"📞 Call ended with status: {call_status}")
-                self.active_calls.pop(call_sid, None)
-                break
-        
-        # Return placeholder results
-        # Real results will come from the agent via API callback
-        return {
-            'call_sid': call_sid,
-            'room_name': room_name,
-            'status': 'completed',
-            'message': 'Call completed, results will be available shortly',
-        }
-    
+        self.test_run_rooms: Dict[str, str] = {}  # test_run_id -> room_name
+
     async def execute_project(
         self,
         db: Session,
         project: Project,
     ) -> Dict[str, Any]:
         """
-        Execute all test runs for a project
-        
-        Args:
-            db: Database session
-            project: Project to execute
-            
-        Returns:
-            Summary of results
+        Execute all test cases for a project in a SINGLE phone call.
         """
         logger.info(f"🚀 Executing project: {project.name}")
         logger.info(f"   Test Suites: {len(project.test_suites)}")
-        logger.info(f"   Calls per suite: {project.number_of_calls}")
-        
-        total_runs = 0
-        successful_runs = 0
-        failed_runs = 0
-        
+        logger.info(f"   Bot Phone: {project.bot_phone_number}")
+
         try:
-            # Get all test runs for this project that are pending
-            test_runs = db.query(TestRun).filter(
-                TestRun.project_id == project.id,
-                TestRun.status == TestRunStatus.PENDING
-            ).all()
-            
+            # Gather all pending test runs and their test cases
+            test_runs: List[TestRun] = (
+                db.query(TestRun)
+                .filter(
+                    TestRun.project_id == project.id,
+                    TestRun.status == TestRunStatus.PENDING,
+                )
+                .all()
+            )
+
+            if not test_runs:
+                logger.warning("⚠️ No pending test runs found")
+                project.status = ProjectStatus.COMPLETED
+                db.commit()
+                return {"total": 0, "status": "no_pending_runs"}
+
             logger.info(f"📋 Found {len(test_runs)} pending test runs")
-            
-            # Execute test runs sequentially (could be parallelized later)
-            for test_run in test_runs:
-                total_runs += 1
-                
-                try:
-                    # Get test case
-                    test_case = test_run.test_case
-                    
-                    logger.info(f"\n{'='*70}")
-                    logger.info(f"Executing test run {total_runs}/{len(test_runs)}")
-                    logger.info(f"Test Case: {test_case.utterance}")
-                    logger.info(f"{'='*70}\n")
-                    
-                    # Execute the test run
-                    await self.execute_test_run(
-                        db=db,
-                        project=project,
-                        test_case=test_case,
-                        test_run=test_run,
-                    )
-                    
-                    successful_runs += 1
-                    
-                    # Brief pause between calls to avoid overwhelming systems
-                    await asyncio.sleep(5)
-                    
-                except Exception as e:
-                    logger.error(f"❌ Test run failed: {e}")
-                    failed_runs += 1
-                    # Continue with next test run
-            
-            # Update project status based on run outcomes
-            project.status = ProjectStatus.FAILED if failed_runs > 0 else ProjectStatus.COMPLETED
-            db.commit()
-            
-            logger.info(f"\n🏁 Project execution completed!")
-            logger.info(f"   Total: {total_runs}")
-            logger.info(f"   Successful: {successful_runs}")
-            logger.info(f"   Failed: {failed_runs}")
-            
-            return {
-                'total': total_runs,
-                'successful': successful_runs,
-                'failed': failed_runs,
-                'status': project.status,
+
+            # Build the combined test plan from all test cases
+            test_plan = []
+            test_run_map: Dict[str, TestRun] = {}  # test_case_id -> test_run
+
+            for tr in test_runs:
+                tc: TestCase = tr.test_case
+                test_plan.append(
+                    {
+                        "id": str(tc.id),
+                        "test_run_id": str(tr.id),
+                        "utterance": tc.utterance,
+                        "expected_behavior": tc.expected_behavior,
+                        "order": tc.order,
+                    }
+                )
+                test_run_map[str(tc.id)] = tr
+
+            # Sort by order so the agent follows the intended sequence
+            test_plan.sort(key=lambda x: x.get("order", 0))
+
+            # Get scenario from first test suite
+            scenario = (
+                project.test_suites[0].scenario
+                if project.test_suites
+                else "Voice bot test"
+            )
+
+            # ── 1. Create ONE LiveKit room ─────────────────────────────
+            room_name = f"test-{project.id}-{uuid.uuid4()}"
+            logger.info(f"📦 Creating LiveKit room: {room_name}")
+
+            room_metadata = {
+                "mode": "test_call",
+                "scenario": scenario,
+                "test_cases": test_plan,
+                "project_id": str(project.id),
+                "bot_phone": project.bot_phone_number,
             }
-            
+
+            await livekit_service.create_test_room(
+                room_name=room_name,
+                metadata=room_metadata,
+            )
+            logger.info(f"✅ Room created: {room_name}")
+
+            # Register room for EVERY test run so any webhook lookup succeeds
+            master_run_id = str(test_runs[0].id)
+            for tr in test_runs:
+                self.test_run_rooms[str(tr.id)] = room_name
+
+            # Mark all runs as IN_PROGRESS
+            for tr in test_runs:
+                tr.status = TestRunStatus.IN_PROGRESS
+                tr.started_at = datetime.utcnow()
+            db.commit()
+
+            # ── 2. Wait for agent to be ready ──────────────────────────
+            logger.info("🤖 Waiting for agent to join room...")
+            await asyncio.sleep(3)
+
+            # ── 3. Make ONE outbound call ──────────────────────────────
+            logger.info(f"📞 Making outbound call to {project.bot_phone_number}...")
+
+            call_sid = await twilio_service.make_outbound_test_call(
+                to_phone=project.bot_phone_number,
+                room_name=room_name,
+                test_run_id=master_run_id,
+            )
+
+            if not call_sid:
+                raise Exception("Failed to initiate Twilio call")
+
+            logger.info(f"✅ Call initiated: {call_sid}")
+
+            # Store call_sid on ALL test runs
+            for tr in test_runs:
+                tr.call_sid = call_sid
+            db.commit()
+
+            self.active_calls[call_sid] = {
+                "room_name": room_name,
+                "project_id": str(project.id),
+                "test_run_ids": [str(tr.id) for tr in test_runs],
+                "started_at": datetime.utcnow(),
+                "status": "in_progress",
+            }
+
+            # ── 4. Wait for the single call to finish ──────────────────
+            logger.info("⏳ Waiting for call to complete...")
+
+            try:
+                await asyncio.wait_for(
+                    self._wait_for_call_completion(call_sid, room_name),
+                    timeout=300,
+                )
+                logger.info("✅ Call completed")
+
+                for tr in test_runs:
+                    tr.status = TestRunStatus.SUCCESS
+                    tr.completed_at = datetime.utcnow()
+                db.commit()
+
+            except asyncio.TimeoutError:
+                logger.error("⏰ Call timeout – exceeded 5 minutes")
+                for tr in test_runs:
+                    tr.status = TestRunStatus.FAILURE
+                    tr.completed_at = datetime.utcnow()
+                db.commit()
+
+            # ── 5. Finalize project ────────────────────────────────────
+            failed = any(tr.status == TestRunStatus.FAILURE for tr in test_runs)
+            project.status = ProjectStatus.FAILED if failed else ProjectStatus.COMPLETED
+            db.commit()
+
+            logger.info(f"🏁 Project execution finished – status: {project.status}")
+            return {
+                "total": len(test_runs),
+                "call_sid": call_sid,
+                "status": str(project.status),
+            }
+
         except Exception as e:
             logger.error(f"❌ Error executing project: {e}", exc_info=True)
-            
-            # Update project status
             project.status = ProjectStatus.FAILED
             db.commit()
-            
             raise
-    
-    def get_call_status(self, call_sid: str) -> Optional[Dict[str, Any]]:
-        """Get status of an active call"""
-        return self.active_calls.get(call_sid)
+
+    # ────────────────────────────────────────────────────────────────────
+    # Internal helpers
+    # ────────────────────────────────────────────────────────────────────
+
+    async def _wait_for_call_completion(
+        self, call_sid: str, room_name: str
+    ) -> Dict[str, Any]:
+        terminal_statuses = {"completed", "failed", "busy", "no-answer", "canceled"}
+        max_call_seconds = 120
+
+        while True:
+            await asyncio.sleep(5)
+
+            if call_sid not in self.active_calls:
+                break
+
+            try:
+                call_data = twilio_service.get_call_status(call_sid)
+                if call_data and call_data.get("status") in terminal_statuses:
+                    logger.info(f"📞 Call ended: {call_data['status']}")
+                    self.active_calls.pop(call_sid, None)
+                    break
+
+                # Safety cutoff: prevent stale calls from lingering forever.
+                call_info = self.active_calls.get(call_sid)
+                if call_info:
+                    started_at = call_info.get("started_at")
+                    if started_at and (datetime.utcnow() - started_at).total_seconds() > max_call_seconds:
+                        logger.warning(f"⏱️ Max call duration reached ({max_call_seconds}s), hanging up")
+                        twilio_service.hangup_call(call_sid)
+            except Exception as e:
+                logger.warning(f"⚠️ Error polling call status: {e}")
+
+        # Clean up room mappings
+        for trid, rname in list(self.test_run_rooms.items()):
+            if rname == room_name:
+                self.test_run_rooms.pop(trid, None)
+
+        return {"call_sid": call_sid, "room_name": room_name, "status": "completed"}
+
+    def get_room_for_test_run(self, test_run_id: str) -> Optional[str]:
+        """Get the LiveKit room name associated with a test run."""
+        return self.test_run_rooms.get(test_run_id)
 
 
-# Global instance
+# Global singleton
 call_orchestration_service = CallOrchestrationService()

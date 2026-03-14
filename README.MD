@@ -9,7 +9,8 @@
 Mora enables you to **automatically test voice AI bots** through real phone calls with intelligent conversational agents. It evaluates both **functional behavior** (did the bot do what it should?) and **conversational quality** (was it natural and coherent?).
 
 ### Key Features:
-- ✅ **Multi-turn conversations** via LiveKit voice agent (STT → LLM → TTS)
+- ✅ **Multi-turn conversations** via LiveKit Cloud agent (STT → LLM → TTS)
+- ✅ **LiveKit Cloud deployment** — no local agent worker required
 - ✅ **Real phone calls** via Twilio integration
 - ✅ **LLM-based evaluation** with Gemini/GPT-4
 - ✅ **Test suite management** for organizing test cases
@@ -26,8 +27,8 @@ Mora enables you to **automatically test voice AI bots** through real phone call
 ┌─────────────────────────────────────────────────────────┐
 │                   MORA PLATFORM                         │
 │  ┌──────────┐    ┌────────────┐    ┌─────────────┐   │
-│  │ Test Run │───▶│  LiveKit   │───▶│    Voice    │   │
-│  │          │    │  Service   │    │    Agent    │   │
+│  │ Test Run │───▶│  LiveKit   │───▶│  LiveKit    │   │
+│  │          │    │  Service   │    │  Cloud Agent│   │
 │  └──────────┘    └────────────┘    │ (STT→LLM→   │   │
 │       │                │            │  TTS)       │   │
 └───────┼────────────────┼────────────┴─────────────┴───┘
@@ -42,14 +43,14 @@ Mora enables you to **automatically test voice AI bots** through real phone call
    ┌─────────┐                          ┌──────────┐
    │   Bot   │                          │ Deepgram │
    │  Phone  │                          │  OpenAI  │
-   └─────────┘                          │ElevenLabs│
+   └─────────┘                          │ Cartesia │
                                         └──────────┘
 ```
 
 ### Components:
 1. **Mora Frontend** (Next.js + MUI) - Dashboard, test management, results viewer
 2. **Mora Backend** (FastAPI) - REST API, test orchestration & evaluation
-3. **LiveKit** - Voice agent infrastructure (STT, LLM, TTS)
+3. **LiveKit Cloud Agent** - Managed voice agent (Deepgram STT, GPT-4.1-mini LLM, Cartesia TTS)
 4. **Twilio** - Outbound calling to bot phone numbers
 5. **WebSocket Bridge** - Connects Twilio audio to LiveKit room
 6. **Gemini/GPT-4** - LLM-based evaluation of conversations
@@ -63,8 +64,9 @@ Mora enables you to **automatically test voice AI bots** through real phone call
 - Node.js 18+ & npm
 - PostgreSQL 15
 - Twilio account
-- LiveKit Cloud account
-- API keys: Deepgram, ElevenLabs, OpenAI/Gemini
+- LiveKit Cloud account (with a deployed cloud agent)
+- LiveKit CLI (`brew install livekit-cli`) and `uv` (`brew install uv`) for agent deployment
+- API keys: OpenAI (for cloud agent LLM), Gemini (for evaluation)
 
 ### 1. Clone & Setup
 
@@ -100,33 +102,64 @@ TWILIO_ACCOUNT_SID=ACxxxxxxxxx
 TWILIO_AUTH_TOKEN=your_token
 TWILIO_PHONE_NUMBER=+15551234567
 
-# Required: LiveKit (voice agent)
+# Required: LiveKit (voice agent infrastructure)
 LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=APIxxxxxxxxx
 LIVEKIT_API_SECRET=your_secret
+LIVEKIT_DISPATCH_AGENT=mora-voice-agent   # must match agent_name in cloud agent code
 
-# Required: Deepgram (STT)
-DEEPGRAM_API_KEY=your_key
-
-# Required: ElevenLabs (TTS)
-ELEVENLABS_API_KEY=your_key
-
-# Required: OpenAI (LLM)
-OPENAI_API_KEY=your_key
-
-# Optional: Gemini (evaluation)
+# Optional: Gemini (evaluation LLM)
 GEMINI_API_KEY=your_key
+GOOGLE_API_KEY=your_key
 LLM_PROVIDER=gemini
+
+# Webhook Configuration
+PUBLIC_URL=https://your-ngrok-url.ngrok-free.dev
 ```
 
-**See `LIVEKIT_SETUP.md` for detailed API key setup instructions.**
+> **Note:** STT, LLM, and TTS API keys (Deepgram, OpenAI, Cartesia) are configured as
+> secrets on the LiveKit Cloud agent, not in the backend `.env`. See the
+> [Deploy Cloud Agent](#deploy-livekit-cloud-agent) section below.
 
-### 3. Run the System (4 terminals)
+### 3. Deploy LiveKit Cloud Agent
+
+The voice agent runs on LiveKit Cloud — no local worker process needed.
+
+```bash
+# Install CLI tools (one-time)
+brew install livekit-cli uv
+
+# Authenticate with LiveKit Cloud
+lk cloud auth
+
+# Navigate to the cloud agent project
+cd backend/livekit_cloud_agent/mora-voice-agent-cloud
+
+# Generate lockfile and create the agent
+uv lock
+lk agent create --region us-east
+
+# Deploy (also used for subsequent code updates)
+lk agent deploy --region us-east
+
+# Verify it is running
+lk agent status
+```
+
+The cloud agent uses LiveKit's managed inference pipeline:
+- **STT:** Deepgram Nova-3
+- **LLM:** OpenAI GPT-4.1-mini
+- **TTS:** Cartesia Sonic-3
+
+Agent secrets (API keys for Deepgram, OpenAI, Cartesia) are managed via the LiveKit Cloud dashboard or `lk agent update-secrets`.
+
+### 4. Run the System (3 terminals)
 
 **Terminal 1 - FastAPI Server:**
 ```bash
 cd backend
-uvicorn app.main:app --reload
+source venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 **Terminal 2 - Next.js Frontend:**
@@ -135,21 +168,15 @@ cd frontend
 npm run dev
 ```
 
-**Terminal 3 - LiveKit Agent Worker:**
-```bash
-cd backend
-python run_agent.py
-```
-
-**Terminal 4 - ngrok (for Twilio webhooks):**
+**Terminal 3 - ngrok (for Twilio webhooks):**
 ```bash
 ngrok http 8000
-# Copy HTTPS URL to PUBLIC_URL in .env
+# Copy HTTPS URL to PUBLIC_URL in backend/.env
 ```
 
 The frontend dashboard will be available at **http://localhost:3000** and the API at **http://localhost:8000**.
 
-### 4. Test It
+### 5. Test It
 
 ```bash
 # Create test suite
@@ -252,7 +279,7 @@ Mora/
 ├── backend/
 │   ├── app/
 │   │   ├── agents/
-│   │   │   └── voice_agent.py          # LiveKit voice agent (STT→LLM→TTS)
+│   │   │   └── voice_agent.py          # Legacy local agent (unused with Cloud deploy)
 │   │   ├── api/
 │   │   │   └── routes/
 │   │   │       ├── test_suites.py      # Test suite CRUD
@@ -260,9 +287,10 @@ Mora/
 │   │   │       ├── webhooks.py         # Twilio webhooks + WebSocket bridge
 │   │   │       └── evaluations.py      # LLM evaluation endpoints
 │   │   ├── services/
-│   │   │   ├── livekit_service.py      # LiveKit room management
-│   │   │   ├── livekit_bridge.py       # Twilio↔LiveKit audio bridge
-│   │   │   ├── call_execution_service.py # Test execution orchestration
+│   │   │   ├── livekit_service.py      # LiveKit room management + agent dispatch
+│   │   │   ├── livekit_bridge.py       # Twilio↔LiveKit bidirectional audio bridge
+│   │   │   ├── call_orchestration_service.py  # Project-level call orchestration
+│   │   │   ├── call_execution_service.py      # Test execution & status tracking
 │   │   │   ├── llm_service.py          # LLM-based evaluation
 │   │   │   ├── evaluation_service.py   # Evaluation workflow
 │   │   │   └── twilio_service.py       # Twilio API wrapper
@@ -272,10 +300,17 @@ Mora/
 │   │   ├── models.py                   # SQLAlchemy models
 │   │   ├── schemas.py                  # Pydantic schemas
 │   │   └── main.py                     # FastAPI app
+│   ├── livekit_cloud_agent/
+│   │   └── mora-voice-agent-cloud/     # LiveKit Cloud agent project
+│   │       ├── src/agent.py            # Cloud agent entrypoint (STT→LLM→TTS)
+│   │       ├── pyproject.toml          # Python dependencies
+│   │       ├── uv.lock                 # Locked dependency versions
+│   │       ├── Dockerfile              # Cloud build image
+│   │       └── livekit.toml            # Cloud agent config (agent ID, project)
 │   ├── alembic/                        # Database migrations
-│   ├── run_agent.py                    # LiveKit agent worker
+│   ├── run_agent.py                    # Local agent worker (optional fallback)
 │   ├── requirements.txt
-│   └── .env.template
+│   └── .env
 ├── frontend/
 │   ├── src/
 │   │   ├── app/                        # Next.js App Router pages
@@ -341,12 +376,12 @@ Mora/
 | Service | Cost | Purpose |
 |---------|------|---------|
 | Twilio | $0.026 | Phone call |
-| LiveKit | $0.016 | Voice agent hosting |
-| Deepgram | $0.009 | Speech-to-text |
-| OpenAI GPT-4 | $0.020 | Conversation logic |
-| ElevenLabs | $0.012 | Text-to-speech |
+| LiveKit Cloud | $0.016 | Voice agent hosting |
+| Deepgram Nova-3 | $0.009 | Speech-to-text |
+| OpenAI GPT-4.1-mini | $0.010 | Conversation logic |
+| Cartesia Sonic-3 | $0.008 | Text-to-speech |
 | Gemini | $0.001 | Evaluation |
-| **Total** | **~$0.084** | **Full test** |
+| **Total** | **~$0.070** | **Full test** |
 
 **ROI:** ~180x cheaper than manual QA testing ($15-30 per test)
 
@@ -371,12 +406,13 @@ Mora/
 - **PostgreSQL** 15 - Database
 - **Pydantic** 2.5 - Data validation
 
-### Voice Infrastructure:
-- **LiveKit** 1.0 - Real-time communication platform
-- **livekit-agents** 1.3 - Agent framework
-- **Deepgram** Nova-2 - Speech-to-text
-- **OpenAI** GPT-4o - LLM for conversation
-- **ElevenLabs** Turbo v2.5 - Text-to-speech
+### Voice Infrastructure (LiveKit Cloud Agent):
+- **LiveKit Cloud** - Managed agent hosting and room infrastructure
+- **livekit-agents** 1.4 - Agent framework (cloud-deployed)
+- **Deepgram** Nova-3 - Speech-to-text (via `inference.STT`)
+- **OpenAI** GPT-4.1-mini - LLM for conversation (via `inference.LLM`)
+- **Cartesia** Sonic-3 - Text-to-speech (via `inference.TTS`)
+- **Silero** VAD + Multilingual turn detector
 
 ### Telephony:
 - **Twilio** 8.11 - Voice calling
@@ -385,6 +421,10 @@ Mora/
 ### AI Evaluation:
 - **Google Gemini** 2.5 Flash - Evaluation LLM
 - **OpenAI** GPT-4 - Alternative evaluator
+
+### CLI Tooling:
+- **livekit-cli** (`lk`) - Agent deployment and management
+- **uv** - Fast Python package manager for cloud builds
 
 ---
 
@@ -440,6 +480,7 @@ The frontend provides a full-featured dashboard for managing tests and reviewing
 - ✅ **Stage 4:** LiveKit voice agent + Twilio integration
 - ✅ **Stage 5:** LLM-based evaluation (Gemini/GPT-4)
 - ✅ **Stage 6:** Frontend dashboard (Next.js + MUI + Tailwind)
+- ✅ **Stage 7:** LiveKit Cloud agent deployment (no local worker needed)
 
 ---
 
@@ -455,10 +496,39 @@ This is a TDD-driven project. See `DEVELOPMENT_PLAN.md` for the complete specifi
 
 ---
 
+## 🔄 Cloud Agent Management
+
+Common `lk` CLI commands for managing the deployed agent:
+
+```bash
+# Check agent status
+lk agent status
+
+# View live runtime logs
+lk agent logs
+
+# View build logs
+lk agent logs --log-type=build
+
+# Deploy a new version after code changes
+lk agent deploy --region us-east
+
+# Restart the agent
+lk agent restart
+
+# Update secrets (API keys)
+lk agent update-secrets --secrets OPENAI_API_KEY=sk-xxx,DEEPGRAM_API_KEY=xxx
+
+# Rollback to previous version
+lk agent rollback
+```
+
+---
+
 ## 🙏 Credits
 
 Built following the original TDD specification with:
-- LiveKit for conversational voice agents
+- LiveKit Cloud for managed conversational voice agents
 - Twilio for telephony infrastructure  
 - Gemini for LLM-based evaluation
 

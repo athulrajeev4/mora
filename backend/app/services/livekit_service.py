@@ -49,22 +49,22 @@ class LiveKitService:
             import json
             
             logger.info(f"📦 Creating test room: {room_name}")
+            logger.info(f"🤖 Dispatching LiveKit agent: {settings.LIVEKIT_DISPATCH_AGENT}")
             
-            # Create room
+            # Create room with agent dispatch so the voice agent auto-joins
             room = await self.lk_api.room.create_room(
                 api.CreateRoomRequest(
                     name=room_name,
                     metadata=json.dumps(metadata),
                     empty_timeout=600,  # 10 minutes
-                    max_participants=10,  # Allow multiple participants
+                    max_participants=10,
+                    agents=[
+                        api.RoomAgentDispatch(agent_name=settings.LIVEKIT_DISPATCH_AGENT),
+                    ],
                 )
             )
             
-            logger.info(f"✅ Room created: {room.name}")
-            logger.info(f"📝 Room metadata: {metadata}")
-            
-            # Note: Agent will auto-join via SIP dispatch rules
-            # No manual dispatch needed - LiveKit handles it automatically
+            logger.info(f"✅ Room created with agent dispatch: {room.name}")
             
             # Generate SIP participant token/URI for Twilio
             # The SIP participant will be the bot answering our call

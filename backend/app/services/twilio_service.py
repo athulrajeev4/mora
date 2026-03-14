@@ -74,11 +74,13 @@ class TwilioService:
         try:
             call = self.client.calls(call_sid).fetch()
             
+            from_number = getattr(call, 'from_', None) or getattr(call, '_from', None) or getattr(call, 'from_formatted', '')
+            
             return {
                 "sid": call.sid,
                 "status": call.status,
                 "direction": call.direction,
-                "from": call.from_,
+                "from": from_number,
                 "to": call.to,
                 "duration": call.duration,
                 "start_time": call.start_time,
@@ -165,60 +167,41 @@ class TwilioService:
         self,
         to_phone: str,
         room_name: str,
-        sip_uri: str,
         test_run_id: Optional[str] = None,
     ) -> Optional[str]:
         """
-        Make outbound call to user's bot and connect to LiveKit room via SIP
-        
-        This is for TEST CALLS where our AI caller calls the user's bot.
-        The call is connected to a LiveKit room where our AI agent is waiting.
+        Make outbound call to user's bot and connect to LiveKit room
+        via Twilio Media Stream WebSocket bridge.
         
         Args:
             to_phone: User's bot phone number to call (e.164 format)
             room_name: LiveKit room name where AI agent is waiting
-            sip_uri: SIP URI to connect the call to LiveKit
-            test_run_id: Optional test run ID for webhook routing
+            test_run_id: Test run ID for webhook routing
             
         Returns:
             call_sid: Twilio Call SID if successful, None if failed
         """
         try:
-            from twilio.twiml.voice_response import VoiceResponse, Dial
+            if not settings.PUBLIC_URL or not test_run_id:
+                print("Error: PUBLIC_URL and test_run_id are required for outbound test calls")
+                return None
             
-            response = VoiceResponse()
-            dial = Dial()
+            voice_url = f"{settings.PUBLIC_URL}/api/webhooks/twilio/voice/{test_run_id}"
+            status_url = f"{settings.PUBLIC_URL}/api/webhooks/twilio/status/{test_run_id}"
+            recording_url = f"{settings.PUBLIC_URL}/api/webhooks/twilio/recording/{test_run_id}"
             
-            dial.sip(sip_uri)
-            response.append(dial)
-            
-            twiml_str = str(response)
-            
-            # Build webhook URLs that match actual route definitions
-            status_url = None
-            recording_url = None
-            if settings.PUBLIC_URL and test_run_id:
-                status_url = f"{settings.PUBLIC_URL}/api/webhooks/twilio/status/{test_run_id}"
-                recording_url = f"{settings.PUBLIC_URL}/api/webhooks/twilio/recording/{test_run_id}"
-            
-            call_kwargs = dict(
+            call = self.client.calls.create(
                 to=to_phone,
                 from_=self.from_phone,
-                twiml=twiml_str,
+                url=voice_url,
+                status_callback=status_url,
+                status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+                status_callback_method='POST',
                 record=True,
+                recording_status_callback=recording_url,
+                recording_status_callback_method='POST',
                 timeout=60,
             )
-            
-            if status_url:
-                call_kwargs["status_callback"] = status_url
-                call_kwargs["status_callback_event"] = ['initiated', 'ringing', 'answered', 'completed']
-                call_kwargs["status_callback_method"] = 'POST'
-            
-            if recording_url:
-                call_kwargs["recording_status_callback"] = recording_url
-                call_kwargs["recording_status_callback_method"] = 'POST'
-            
-            call = self.client.calls.create(**call_kwargs)
             
             return call.sid
             
