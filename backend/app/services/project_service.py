@@ -4,7 +4,7 @@ Business logic for project and test execution management
 """
 from typing import List, Optional
 from uuid import UUID
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 
 from app.models import Project, TestSuite, TestRun, TestCase, ProjectStatus, TestRunStatus
@@ -138,8 +138,13 @@ class ProjectService:
     
     @staticmethod
     def get_project_test_runs(db: Session, project_id: UUID) -> List[TestRun]:
-        """Get all test runs for a project"""
-        return db.query(TestRun).filter(TestRun.project_id == project_id).all()
+        """Get all test runs for a project with their test cases"""
+        return (
+            db.query(TestRun)
+            .options(joinedload(TestRun.test_case))
+            .filter(TestRun.project_id == project_id)
+            .all()
+        )
     
     @staticmethod
     def update_project_status(

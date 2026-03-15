@@ -101,11 +101,10 @@ export interface TestRun {
   transcript: string | null;
   started_at: string | null;
   completed_at: string | null;
-  duration: number | null;
-  error_message: string | null;
+  created_at: string;
   functional_evaluation: FunctionalEvaluation | null;
   conversational_evaluation: ConversationalEvaluation | null;
-  test_case: TestCase;
+  test_case?: TestCase;
 }
 
 // ============================================================================
@@ -113,13 +112,22 @@ export interface TestRun {
 // ============================================================================
 
 export interface FunctionalEvaluation {
-  score: number;
+  passed: boolean;
+  score: number; // 0-100
   reasoning: string;
+  matched_behaviors?: string[];
+  missing_behaviors?: string[];
 }
 
 export interface ConversationalEvaluation {
-  score: number;
-  reasoning: string;
+  overall_score: number; // 0-100
+  fluency?: number;
+  naturalness?: number;
+  error_handling?: number;
+  coherence?: number;
+  feedback: string;
+  strengths?: string[];
+  weaknesses?: string[];
 }
 
 export interface EvaluationSummary {

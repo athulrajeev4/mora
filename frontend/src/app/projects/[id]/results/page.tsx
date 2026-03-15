@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useProject, useProjectRuns } from "@/lib/hooks/use-projects";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import {
   Tabs,
   TabsContent,
@@ -28,29 +27,68 @@ import {
   MessageSquare,
   Clock,
   Phone,
+  RefreshCw,
 } from "lucide-react";
 import type { TestRun } from "@/types";
+import { evaluationsApi } from "@/lib/api/evaluations";
+import { toast } from "sonner";
+
+function getFunctionalScore(run: TestRun): number {
+  return run.functional_evaluation?.score ?? 0;
+}
+
+function getConversationalScore(run: TestRun): number {
+  return run.conversational_evaluation?.overall_score ?? 0;
+}
+
+function getConversationalReasoning(run: TestRun): string {
+  const eval_ = run.conversational_evaluation;
+  if (!eval_) return "";
+  return eval_.feedback || "";
+}
+
+const PASS_THRESHOLD = 70;
 
 export default function ProjectResultsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data: project, isLoading: loadingProject } = useProject(id);
-  const { data: runs, isLoading: loadingRuns } = useProjectRuns(id);
+  const { data: runs, isLoading: loadingRuns, refetch } = useProjectRuns(id);
   const [selectedRun, setSelectedRun] = useState<TestRun | null>(null);
+  const [evaluating, setEvaluating] = useState(false);
 
   const evaluatedRuns = runs?.filter((r) => r.functional_evaluation && r.conversational_evaluation) || [];
   
   const totalRuns = runs?.length || 0;
   const completedRuns = runs?.filter((r) => r.status === "success").length || 0;
-  const passedRuns = evaluatedRuns.filter((r) => (r.functional_evaluation?.score || 0) >= 7).length;
+  const passedRuns = evaluatedRuns.filter((r) => getFunctionalScore(r) >= PASS_THRESHOLD).length;
   const passRate = evaluatedRuns.length > 0 ? (passedRuns / evaluatedRuns.length) * 100 : 0;
   
   const avgFunctionalScore = evaluatedRuns.length > 0
-    ? evaluatedRuns.reduce((sum, r) => sum + (r.functional_evaluation?.score || 0), 0) / evaluatedRuns.length
+    ? evaluatedRuns.reduce((sum, r) => sum + getFunctionalScore(r), 0) / evaluatedRuns.length
     : 0;
     
   const avgConversationalScore = evaluatedRuns.length > 0
-    ? evaluatedRuns.reduce((sum, r) => sum + (r.conversational_evaluation?.score || 0), 0) / evaluatedRuns.length
+    ? evaluatedRuns.reduce((sum, r) => sum + getConversationalScore(r), 0) / evaluatedRuns.length
     : 0;
+
+  const hasUnevaluatedRuns = runs?.some(
+    (r) => r.status === "success" && (!r.functional_evaluation || !r.conversational_evaluation)
+  );
+
+  const handleEvaluate = async () => {
+    setEvaluating(true);
+    try {
+      await evaluationsApi.evaluateProject(id);
+      toast.success("Evaluation started — results will appear shortly");
+      setTimeout(() => refetch(), 5000);
+      setTimeout(() => refetch(), 15000);
+      setTimeout(() => refetch(), 30000);
+    } catch {
+      toast.error("Failed to trigger evaluation");
+    } finally {
+      setEvaluating(false);
+    }
+  };
 
   if (loadingProject || loadingRuns) {
     return (
@@ -86,12 +124,32 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
             Back to Project
           </Button>
         </Link>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
-          {project.name} — Results
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          Comprehensive analysis of test execution and evaluation results
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 2 }}>
+          <div>
+            <Typography variant="h4" sx={{ fontWeight: 700 }}>
+              {project.name} — Results
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Comprehensive analysis of test execution and evaluation results
+            </Typography>
+          </div>
+          <Box sx={{ display: "flex", gap: 1.5 }}>
+            {hasUnevaluatedRuns && (
+              <Button onClick={handleEvaluate} disabled={evaluating}>
+                {evaluating ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <PlayCircle className="h-4 w-4 mr-2" />
+                )}
+                Run Evaluation
+              </Button>
+            )}
+            <Button variant="outline" onClick={() => refetch()}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+          </Box>
+        </Box>
       </div>
 
       {/* Summary Cards */}
@@ -117,7 +175,7 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
             sx={{ borderRadius: 2, height: 6 }}
           />
           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
-            {passedRuns} of {evaluatedRuns.length} passed
+            {passedRuns} of {evaluatedRuns.length} passed (≥{PASS_THRESHOLD})
           </Typography>
         </Paper>
 
@@ -127,18 +185,18 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
           </Typography>
           <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1.5 }}>
             <Typography variant="h4" sx={{ fontWeight: 800 }}>
-              {avgFunctionalScore.toFixed(1)}
+              {avgFunctionalScore.toFixed(0)}
             </Typography>
             <CheckCircle2 className="h-5 w-5 text-indigo-500" />
           </Box>
           <LinearProgress
             variant="determinate"
-            value={avgFunctionalScore * 10}
+            value={avgFunctionalScore}
             color="primary"
             sx={{ borderRadius: 2, height: 6 }}
           />
           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
-            Average across all tests
+            Average out of 100
           </Typography>
         </Paper>
 
@@ -148,18 +206,18 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
           </Typography>
           <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1.5 }}>
             <Typography variant="h4" sx={{ fontWeight: 800 }}>
-              {avgConversationalScore.toFixed(1)}
+              {avgConversationalScore.toFixed(0)}
             </Typography>
             <MessageSquare className="h-5 w-5 text-violet-500" />
           </Box>
           <LinearProgress
             variant="determinate"
-            value={avgConversationalScore * 10}
+            value={avgConversationalScore}
             color="secondary"
             sx={{ borderRadius: 2, height: 6 }}
           />
           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
-            Average across all tests
+            Average out of 100
           </Typography>
         </Paper>
 
@@ -184,6 +242,23 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
           </Typography>
         </Paper>
       </div>
+
+      {/* Unevaluated notice */}
+      {evaluatedRuns.length === 0 && completedRuns > 0 && (
+        <Paper sx={{ p: 3, mb: 4, borderRadius: 2.5, border: "1px solid", borderColor: "warning.light", bgcolor: "warning.50" }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <Loader2 className="h-5 w-5 text-amber-500" />
+            <div>
+              <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                Evaluation Pending
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {completedRuns} test run(s) completed but not yet evaluated. Click &quot;Run Evaluation&quot; to analyze results with AI.
+              </Typography>
+            </div>
+          </Box>
+        </Paper>
+      )}
 
       {/* Test Runs Grid */}
       <div className="grid gap-6 lg:grid-cols-2">
@@ -230,13 +305,13 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
                   <div className="flex gap-4 text-sm">
                     {run.functional_evaluation && (
                       <div className="flex items-center gap-1.5">
-                        {run.functional_evaluation.score >= 7 ? (
+                        {getFunctionalScore(run) >= PASS_THRESHOLD ? (
                           <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                         ) : (
                           <XCircle className="h-4 w-4 text-red-500" />
                         )}
                         <Typography variant="body2">
-                          Functional: {run.functional_evaluation.score}/10
+                          Functional: {getFunctionalScore(run)}/100
                         </Typography>
                       </div>
                     )}
@@ -244,9 +319,14 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
                       <div className="flex items-center gap-1.5">
                         <MessageSquare className="h-4 w-4 text-violet-500" />
                         <Typography variant="body2">
-                          Conv: {run.conversational_evaluation.score}/10
+                          Conv: {getConversationalScore(run)}/100
                         </Typography>
                       </div>
+                    )}
+                    {!run.functional_evaluation && !run.conversational_evaluation && run.status === "success" && (
+                      <Typography variant="caption" color="text.secondary">
+                        Awaiting evaluation...
+                      </Typography>
                     )}
                   </div>
                 </CardContent>
@@ -270,6 +350,9 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
             <Card className="rounded-xl">
               <CardHeader>
                 <Typography variant="h6">Test Run Details</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 500, mt: 0.5 }}>
+                  {selectedRun.test_case?.utterance || "Test Run"}
+                </Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
                   {selectedRun.call_sid}
                 </Typography>
@@ -287,19 +370,28 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
                       <>
                         <div className="flex items-center justify-between p-4 border rounded-xl">
                           <div className="flex items-center gap-2">
-                            {selectedRun.functional_evaluation.score >= 7 ? (
+                            {getFunctionalScore(selectedRun) >= PASS_THRESHOLD ? (
                               <CheckCircle2 className="h-5 w-5 text-emerald-500" />
                             ) : (
                               <XCircle className="h-5 w-5 text-red-500" />
                             )}
                             <Typography variant="body1" sx={{ fontWeight: 600 }}>
-                              {selectedRun.functional_evaluation.score >= 7 ? "PASSED" : "FAILED"}
+                              {selectedRun.functional_evaluation.passed ? "PASSED" : "FAILED"}
                             </Typography>
                           </div>
                           <Chip
-                            label={`${selectedRun.functional_evaluation.score}/10`}
-                            color={selectedRun.functional_evaluation.score >= 7 ? "success" : "error"}
+                            label={`${getFunctionalScore(selectedRun)}/100`}
+                            color={getFunctionalScore(selectedRun) >= PASS_THRESHOLD ? "success" : "error"}
                             variant="outlined"
+                          />
+                        </div>
+                        <div>
+                          <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>Score</Typography>
+                          <LinearProgress
+                            variant="determinate"
+                            value={getFunctionalScore(selectedRun)}
+                            color={getFunctionalScore(selectedRun) >= PASS_THRESHOLD ? "success" : "error"}
+                            sx={{ borderRadius: 2, height: 8, mb: 2 }}
                           />
                         </div>
                         <div>
@@ -308,6 +400,34 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
                             {selectedRun.functional_evaluation.reasoning}
                           </Typography>
                         </div>
+                        {selectedRun.functional_evaluation.matched_behaviors && selectedRun.functional_evaluation.matched_behaviors.length > 0 && (
+                          <div>
+                            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1, color: "success.main" }}>
+                              Matched Behaviors
+                            </Typography>
+                            <ul className="list-disc list-inside space-y-1">
+                              {selectedRun.functional_evaluation.matched_behaviors.map((b, i) => (
+                                <li key={i}>
+                                  <Typography variant="body2" component="span" color="text.secondary">{b}</Typography>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {selectedRun.functional_evaluation.missing_behaviors && selectedRun.functional_evaluation.missing_behaviors.length > 0 && (
+                          <div>
+                            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1, color: "error.main" }}>
+                              Missing Behaviors
+                            </Typography>
+                            <ul className="list-disc list-inside space-y-1">
+                              {selectedRun.functional_evaluation.missing_behaviors.map((b, i) => (
+                                <li key={i}>
+                                  <Typography variant="body2" component="span" color="text.secondary">{b}</Typography>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                       </>
                     ) : (
                       <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center", py: 8 }}>
@@ -320,21 +440,79 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
                     {selectedRun.conversational_evaluation ? (
                       <>
                         <div className="p-4 border rounded-xl">
-                          <div className="flex items-center justify-between">
-                            <Typography variant="body1" sx={{ fontWeight: 600 }}>Score</Typography>
+                          <div className="flex items-center justify-between mb-3">
+                            <Typography variant="body1" sx={{ fontWeight: 600 }}>Overall Score</Typography>
                             <Chip
-                              label={`${selectedRun.conversational_evaluation.score}/10`}
-                              color={selectedRun.conversational_evaluation.score >= 7 ? "success" : "error"}
+                              label={`${getConversationalScore(selectedRun)}/100`}
+                              color={getConversationalScore(selectedRun) >= PASS_THRESHOLD ? "success" : "error"}
                               variant="outlined"
                             />
                           </div>
+                          <LinearProgress
+                            variant="determinate"
+                            value={getConversationalScore(selectedRun)}
+                            color={getConversationalScore(selectedRun) >= PASS_THRESHOLD ? "success" : "error"}
+                            sx={{ borderRadius: 2, height: 8 }}
+                          />
                         </div>
+
+                        {/* Sub-scores */}
+                        <div className="grid grid-cols-2 gap-3">
+                          {(["fluency", "naturalness", "error_handling", "coherence"] as const).map((key) => {
+                            const val = selectedRun.conversational_evaluation?.[key];
+                            if (val == null) return null;
+                            const label = key.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
+                            return (
+                              <Paper key={key} sx={{ p: 2, borderRadius: 2, border: "1px solid", borderColor: "divider" }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                                  {label}
+                                </Typography>
+                                <Typography variant="h6" sx={{ fontWeight: 700 }}>{val}</Typography>
+                                <LinearProgress
+                                  variant="determinate"
+                                  value={val}
+                                  sx={{ borderRadius: 2, height: 4, mt: 0.5 }}
+                                />
+                              </Paper>
+                            );
+                          })}
+                        </div>
+
                         <div>
-                          <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>Reasoning</Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>Feedback</Typography>
                           <Typography variant="body2" color="text.secondary" sx={{ p: 2, bgcolor: "grey.50", borderRadius: 2 }}>
-                            {selectedRun.conversational_evaluation.reasoning}
+                            {getConversationalReasoning(selectedRun)}
                           </Typography>
                         </div>
+
+                        {selectedRun.conversational_evaluation.strengths && selectedRun.conversational_evaluation.strengths.length > 0 && (
+                          <div>
+                            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1, color: "success.main" }}>
+                              Strengths
+                            </Typography>
+                            <ul className="list-disc list-inside space-y-1">
+                              {selectedRun.conversational_evaluation.strengths.map((s, i) => (
+                                <li key={i}>
+                                  <Typography variant="body2" component="span" color="text.secondary">{s}</Typography>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {selectedRun.conversational_evaluation.weaknesses && selectedRun.conversational_evaluation.weaknesses.length > 0 && (
+                          <div>
+                            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1, color: "error.main" }}>
+                              Areas for Improvement
+                            </Typography>
+                            <ul className="list-disc list-inside space-y-1">
+                              {selectedRun.conversational_evaluation.weaknesses.map((w, i) => (
+                                <li key={i}>
+                                  <Typography variant="body2" component="span" color="text.secondary">{w}</Typography>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                       </>
                     ) : (
                       <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center", py: 8 }}>
@@ -346,7 +524,7 @@ export default function ProjectResultsPage({ params }: { params: Promise<{ id: s
                   <TabsContent value="transcript" className="space-y-4 mt-4">
                     {selectedRun.transcript ? (
                       <div className="space-y-3 max-h-[600px] overflow-y-auto">
-                        {selectedRun.transcript.split("\n").map((line, idx) => {
+                        {selectedRun.transcript.split("\n").filter(Boolean).map((line, idx) => {
                           const isCaller = line.toLowerCase().startsWith("caller:");
                           const isBot = line.toLowerCase().startsWith("bot:");
                           

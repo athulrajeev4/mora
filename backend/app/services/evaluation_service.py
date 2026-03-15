@@ -66,18 +66,6 @@ class EvaluationService:
                     print(f"❌ Failed to transcribe audio for test run {test_run_id}")
                     return False
                 
-                # For MVP without real transcription: create mock transcript from test case
-                if "[Transcription service would process" in transcript:
-                    mock_transcript = f"""[Call begins]
-Caller: {test_case.utterance}
-Bot: Thank you for calling! I'd be happy to help you with that reservation.
-Caller: Great, thanks!
-Bot: Let me get some details. Can I have your name please?
-Caller: [pause - call ended by test]
-[Call ends]"""
-                    transcript = mock_transcript
-                    print(f"📝 Generated mock transcript for testing (length: {len(transcript)} chars)")
-                
                 test_run.transcript = transcript
                 db.commit()
                 print(f"✅ Transcription complete: {len(transcript)} characters")

@@ -131,6 +131,7 @@ class TestRunResponse(BaseModel):
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
     created_at: datetime
+    test_case: Optional[TestCaseResponse] = None
     
     @field_validator('functional_evaluation', 'conversational_evaluation', mode='before')
     @classmethod

@@ -301,47 +301,53 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {runs.map((run) => (
-                    <TableRow key={run.id} className="cursor-pointer hover:bg-slate-50">
-                      <TableCell className="font-medium max-w-xs truncate">
-                        {run.test_case?.utterance || "N/A"}
-                      </TableCell>
-                      <TableCell>{getRunStatusChip(run.status)}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {run.call_sid ? run.call_sid.substring(0, 12) + "..." : "\u2014"}
-                      </TableCell>
-                      <TableCell>
-                        {run.duration ? `${run.duration}s` : "\u2014"}
-                      </TableCell>
-                      <TableCell>
-                        {run.functional_evaluation?.score ? (
-                          <Chip
-                            label={`${run.functional_evaluation.score}/10`}
-                            color={run.functional_evaluation.score >= 7 ? "success" : "error"}
-                            size="small"
-                            variant="outlined"
-                          />
-                        ) : "\u2014"}
-                      </TableCell>
-                      <TableCell>
-                        {run.conversational_evaluation?.score ? (
-                          <Chip
-                            label={`${run.conversational_evaluation.score}/10`}
-                            color={run.conversational_evaluation.score >= 7 ? "success" : "error"}
-                            size="small"
-                            variant="outlined"
-                          />
-                        ) : "\u2014"}
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="caption" color="text.secondary">
-                          {run.started_at
-                            ? formatDistanceToNow(new Date(run.started_at), { addSuffix: true })
+                  {runs.map((run) => {
+                    const funcScore = run.functional_evaluation?.score ?? null;
+                    const convScore = run.conversational_evaluation?.overall_score ?? null;
+                    return (
+                      <TableRow key={run.id} className="cursor-pointer hover:bg-slate-50">
+                        <TableCell className="font-medium max-w-xs truncate">
+                          {run.test_case?.utterance || "Test Run"}
+                        </TableCell>
+                        <TableCell>{getRunStatusChip(run.status)}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {run.call_sid ? run.call_sid.substring(0, 12) + "..." : "\u2014"}
+                        </TableCell>
+                        <TableCell>
+                          {run.started_at && run.completed_at
+                            ? `${Math.round((new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) / 1000)}s`
                             : "\u2014"}
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                        </TableCell>
+                        <TableCell>
+                          {funcScore != null ? (
+                            <Chip
+                              label={`${funcScore}/100`}
+                              color={funcScore >= 70 ? "success" : "error"}
+                              size="small"
+                              variant="outlined"
+                            />
+                          ) : "\u2014"}
+                        </TableCell>
+                        <TableCell>
+                          {convScore != null ? (
+                            <Chip
+                              label={`${convScore}/100`}
+                              color={convScore >= 70 ? "success" : "error"}
+                              size="small"
+                              variant="outlined"
+                            />
+                          ) : "\u2014"}
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="caption" color="text.secondary">
+                            {run.started_at
+                              ? formatDistanceToNow(new Date(run.started_at), { addSuffix: true })
+                              : "\u2014"}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>

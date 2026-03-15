@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.models import Project, TestCase, TestRun, TestSuite, TestRunStatus, ProjectStatus
 from app.services.twilio_service import twilio_service
 from app.services.livekit_service import livekit_service
+from app.services.evaluation_service import evaluation_service
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,14 @@ class CallOrchestrationService:
                     tr.completed_at = datetime.utcnow()
                 db.commit()
 
-            # ── 5. Finalize project ────────────────────────────────────
+            # ── 5. Fetch recording & trigger evaluation ───────────────
+            successful_runs = [
+                tr for tr in test_runs if tr.status == TestRunStatus.SUCCESS
+            ]
+            if successful_runs:
+                await self._fetch_and_evaluate(db, call_sid, successful_runs)
+
+            # ── 6. Finalize project ────────────────────────────────────
             failed = any(tr.status == TestRunStatus.FAILURE for tr in test_runs)
             project.status = ProjectStatus.FAILED if failed else ProjectStatus.COMPLETED
             db.commit()
@@ -233,6 +241,35 @@ class CallOrchestrationService:
                 self.test_run_rooms.pop(trid, None)
 
         return {"call_sid": call_sid, "room_name": room_name, "status": "completed"}
+
+    async def _fetch_and_evaluate(
+        self, db: Session, call_sid: str, test_runs: List[TestRun]
+    ):
+        """
+        After a call ends, try to fetch the recording from Twilio and
+        run LLM evaluation on each test run.
+        """
+        await asyncio.sleep(5)
+
+        try:
+            recordings = twilio_service.get_call_recordings(call_sid)
+            if recordings:
+                audio_url = recordings[0].get("url", "")
+                if audio_url:
+                    for tr in test_runs:
+                        tr.audio_url = audio_url
+                    db.commit()
+                    logger.info(f"Stored recording from Twilio for {len(test_runs)} runs")
+        except Exception as e:
+            logger.warning(f"Could not fetch recordings from Twilio: {e}")
+
+        for tr in test_runs:
+            if tr.audio_url:
+                try:
+                    logger.info(f"Auto-evaluating test run {tr.id}...")
+                    await evaluation_service.evaluate_test_run(db, tr.id)
+                except Exception as e:
+                    logger.warning(f"Evaluation failed for run {tr.id}: {e}")
 
     def get_room_for_test_run(self, test_run_id: str) -> Optional[str]:
         """Get the LiveKit room name associated with a test run."""

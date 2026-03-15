@@ -1,18 +1,23 @@
 """
 Twilio Webhook Routes - Handle Twilio callbacks and media stream bridge
 """
+import logging
 from uuid import UUID
-from fastapi import APIRouter, Depends, Request, Form, HTTPException, status, WebSocket
+from fastapi import APIRouter, Depends, Request, Form, HTTPException, status, WebSocket, BackgroundTasks
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.core.database import get_db
+from app.models import TestRun, TestRunStatus
 from app.services.call_execution_service import call_execution_service
 from app.services.call_orchestration_service import call_orchestration_service
+from app.services.evaluation_service import evaluation_service
 from app.services.twilio_service import twilio_service
 from app.services.livekit_bridge import handle_twilio_websocket
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -136,6 +141,7 @@ async def handle_status_webhook(
 @router.post("/recording/{test_run_id}")
 async def handle_recording_webhook(
     test_run_id: UUID,
+    background_tasks: BackgroundTasks,
     RecordingSid: str = Form(...),
     RecordingUrl: str = Form(...),
     RecordingDuration: Optional[str] = Form(None),
@@ -143,28 +149,52 @@ async def handle_recording_webhook(
 ):
     """
     Handle recording completion webhook from Twilio.
+    Propagates recording to all sibling test runs (same call_sid)
+    and auto-triggers LLM evaluation.
     """
-    print(f"🎙️ Recording webhook: {test_run_id} - {RecordingSid}")
+    logger.info(f"Recording webhook: {test_run_id} - {RecordingSid}")
 
     recording_url = RecordingUrl.replace('.json', '.mp3')
 
-    call_execution_service.store_recording(
-        db=db,
-        test_run_id=test_run_id,
-        recording_url=recording_url,
-        recording_sid=RecordingSid
-    )
+    master_run = db.query(TestRun).filter(TestRun.id == test_run_id).first()
+    if not master_run:
+        raise HTTPException(status_code=404, detail="Test run not found")
+
+    sibling_runs = [master_run]
+    if master_run.call_sid:
+        sibling_runs = (
+            db.query(TestRun)
+            .filter(
+                TestRun.call_sid == master_run.call_sid,
+                TestRun.project_id == master_run.project_id,
+            )
+            .all()
+        )
+
+    for run in sibling_runs:
+        run.audio_url = recording_url
+    db.commit()
+    logger.info(f"Stored recording on {len(sibling_runs)} test run(s)")
 
     try:
         transcript = twilio_service.get_transcription(RecordingSid)
         if transcript:
-            call_execution_service.store_transcript(
-                db=db,
-                test_run_id=test_run_id,
-                transcript=transcript
-            )
+            for run in sibling_runs:
+                run.transcript = transcript
+            db.commit()
     except Exception as e:
-        print(f"Error fetching transcription: {e}")
+        logger.warning(f"Error fetching transcription: {e}")
+
+    runs_to_evaluate = [
+        r for r in sibling_runs
+        if r.status == TestRunStatus.SUCCESS and r.audio_url
+    ]
+    if runs_to_evaluate:
+        logger.info(f"Auto-triggering evaluation for {len(runs_to_evaluate)} run(s)")
+        for run in runs_to_evaluate:
+            background_tasks.add_task(
+                evaluation_service.evaluate_test_run, db, run.id
+            )
 
     return {"status": "received"}
 

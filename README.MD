@@ -15,8 +15,9 @@ Mora enables you to **automatically test voice AI bots** through real phone call
 - ✅ **LLM-based evaluation** with Gemini/GPT-4
 - ✅ **Test suite management** for organizing test cases
 - ✅ **Project-based testing** with batch execution
-- ✅ **Real-time transcription** and conversation capture
-- ✅ **Comprehensive scoring** (functional + conversational)
+- ✅ **Auto-transcription** from call recordings (Whisper or Gemini multimodal)
+- ✅ **Auto-evaluation** triggered after each call completes — no manual step
+- ✅ **Comprehensive scoring** (functional + conversational, 0-100 with sub-scores)
 - ✅ **Modern frontend dashboard** (Next.js + MUI + Tailwind CSS)
 
 ---
@@ -359,13 +360,16 @@ Mora/
 ### Webhooks
 - `POST /api/webhooks/twilio/voice/{test_run_id}` - TwiML voice instructions
 - `POST /api/webhooks/twilio/status/{test_run_id}` - Call status updates
+- `POST /api/webhooks/twilio/recording/{test_run_id}` - Recording completion (auto-triggers evaluation)
 - `WebSocket /api/webhooks/twilio/stream/{test_run_id}` - Audio stream bridge
 
 ### Evaluations
-- `POST /api/evaluations/test-runs/{id}/evaluate` - Trigger evaluation
+- `POST /api/evaluations/test-runs/{id}/evaluate` - Manually trigger evaluation
 - `GET /api/evaluations/test-runs/{id}/evaluation` - Get evaluation results
-- `POST /api/evaluations/projects/{id}/evaluate` - Batch evaluate project
+- `POST /api/evaluations/projects/{id}/evaluate` - Batch evaluate project (manual fallback)
 - `GET /api/evaluations/projects/{id}/evaluation-summary` - Get project summary
+
+> **Note:** Evaluation is auto-triggered after each call recording arrives. The manual endpoints above are fallbacks in case auto-evaluation didn't fire.
 
 ---
 
@@ -419,8 +423,9 @@ Mora/
 - **ngrok** - Webhook tunneling (dev)
 
 ### AI Evaluation:
-- **Google Gemini** 2.5 Flash - Evaluation LLM
-- **OpenAI** GPT-4 - Alternative evaluator
+- **Google Gemini** 2.5 Flash - Evaluation LLM + audio transcription (multimodal fallback)
+- **OpenAI Whisper** - Primary audio transcription (if `OPENAI_API_KEY` is set)
+- **OpenAI** GPT-4 - Alternative evaluator (if `LLM_PROVIDER=openai`)
 
 ### CLI Tooling:
 - **livekit-cli** (`lk`) - Agent deployment and management
@@ -459,7 +464,7 @@ The frontend provides a full-featured dashboard for managing tests and reviewing
 | **Test Suites** | Create, edit, and delete test suites with AI-generated test cases |
 | **Projects** | Configure projects with bot phone numbers and attached test suites |
 | **Project Detail** | View stats, attached suites, test runs table, and activate execution |
-| **Results** | Summary cards with pass rate, score breakdowns (LinearProgress), transcript viewer |
+| **Results** | Auto-populated after calls; pass rate, functional/conversational scores (0-100), sub-scores, matched/missing behaviors, strengths/weaknesses, transcript viewer, audio playback |
 
 ### UI Design:
 - **Indigo-600** primary color palette with MUI theme system
@@ -481,6 +486,7 @@ The frontend provides a full-featured dashboard for managing tests and reviewing
 - ✅ **Stage 5:** LLM-based evaluation (Gemini/GPT-4)
 - ✅ **Stage 6:** Frontend dashboard (Next.js + MUI + Tailwind)
 - ✅ **Stage 7:** LiveKit Cloud agent deployment (no local worker needed)
+- ✅ **Stage 8:** Evaluation pipeline — auto-transcription, auto-evaluation, results display
 
 ---
 

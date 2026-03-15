@@ -40,43 +40,37 @@ class LLMService:
     
     async def transcribe_audio(self, audio_url: str, audio_format: str = "mp3") -> Optional[str]:
         """
-        Transcribe audio file using OpenAI Whisper or Gemini
-        
-        Args:
-            audio_url: URL of the audio file (Twilio recording)
-            audio_format: Format of audio file (mp3, wav, etc.)
-            
-        Returns:
-            Transcribed text or None if failed
+        Transcribe audio using Whisper (primary) or Gemini (fallback).
+        Returns None if neither provider is available.
         """
         try:
-            # Download audio file from Twilio
             audio_path = await self._download_audio(audio_url)
-            
             if not audio_path:
                 print(f"Failed to download audio from {audio_url}")
                 return None
-            
-            # Use OpenAI Whisper if available (most accurate)
+
+            file_size = os.path.getsize(audio_path)
+            print(f"✅ Audio downloaded ({file_size} bytes)")
+
+            transcript = None
+
             if self.openai_client:
+                print("📝 Transcribing with Whisper...")
                 transcript = await self._transcribe_with_whisper(audio_path)
-            # For MVP without Whisper: Use simple mock based on test case
-            # In production, you would use a transcription service
-            else:
-                print("⚠️  No Whisper API available, using mock transcription for testing")
-                # Get file size to ensure it was downloaded
-                file_size = os.path.getsize(audio_path)
-                print(f"✅ Audio file downloaded ({file_size} bytes)")
-                
-                # Return a placeholder - in production this would be actual transcription
-                transcript = "[Transcription service would process this 32-second call recording]"
-            
-            # Clean up downloaded file
+
+            if not transcript and self.gemini_client:
+                print("📝 Transcribing with Gemini (audio fallback)...")
+                transcript = await self._transcribe_with_gemini(audio_path)
+
             if os.path.exists(audio_path):
                 os.remove(audio_path)
-            
+
+            if not transcript:
+                print("❌ No transcription provider available (need OPENAI_API_KEY or GEMINI_API_KEY)")
+                return None
+
             return transcript
-            
+
         except Exception as e:
             print(f"Error transcribing audio: {str(e)}")
             import traceback
@@ -144,32 +138,26 @@ class LLMService:
             return None
     
     async def _transcribe_with_gemini(self, audio_path: str) -> Optional[str]:
-        """
-        Transcribe audio using Gemini (fallback method)
-        Note: Gemini 1.5 supports audio input
-        
-        Args:
-            audio_path: Path to audio file
-            
-        Returns:
-            Transcribed text
-        """
+        """Transcribe audio using Gemini multimodal (supports audio natively)."""
         try:
-            # Upload audio file to Gemini
             if not self.gemini_client:
                 return None
 
             audio_file = self.gemini_client.files.upload(path=audio_path)
-            
-            # Generate transcription
-            prompt = "Please transcribe this audio recording. Provide only the transcription without any additional commentary."
+
+            prompt = (
+                "Transcribe this phone call recording as a dialogue. "
+                "Use the format 'Caller: ...' and 'Bot: ...' for each speaker turn. "
+                "If you cannot distinguish speakers, just transcribe sequentially. "
+                "Return ONLY the transcript text, no commentary."
+            )
             response = self.gemini_client.models.generate_content(
                 model=self.gemini_model,
                 contents=[prompt, audio_file],
             )
-            
+
             return response.text
-            
+
         except Exception as e:
             print(f"Gemini transcription error: {str(e)}")
             return None
