@@ -143,7 +143,7 @@ class LLMService:
             if not self.gemini_client:
                 return None
 
-            audio_file = self.gemini_client.files.upload(path=audio_path)
+            audio_file = self.gemini_client.files.upload(file=audio_path)
 
             prompt = (
                 "Transcribe this phone call recording as a dialogue. "
